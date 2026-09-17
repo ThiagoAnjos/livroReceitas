@@ -47,9 +47,10 @@
 # Experiencia do usuario:
 #   O WLST imprime, por padrao, muito "ruido" nativo (banners de conexao,
 #   avisos de protocolo, dump completo de cada ls()/cd()). Para manter a
-#   tela limpa, este script redireciona temporariamente a saida padrao
-#   (Python e Java) para um destino nulo enquanto navega as arvores do
-#   WLST, e usa log()/debug() - que escrevem diretamente no stream real
+#   tela limpa, este script redireciona temporariamente o stream Java
+#   System.out para um destino nulo enquanto navega as arvores do WLST
+#   (ver silence()/unsilence() para o motivo de NAO tocar em sys.stdout),
+#   e usa log()/debug() - que escrevem diretamente no sys.stdout original,
 #   guardado no inicio - para mostrar somente as mensagens proprias do
 #   script. Defina a variavel de ambiente BRIDGE_DEBUG=1 para reexibir os
 #   detalhes de navegacao (util em diagnostico).
@@ -93,22 +94,23 @@ def debug(msg):
 
 
 def silence():
-    """Suprime a saida nativa e verbosa do WLST (Python e Java), mantendo
-    log()/debug() sempre visiveis pois escrevem no stream real guardado."""
-    sys.stdout = _SilentWriter()
+    """Suprime a saida nativa e verbosa do WLST redirecionando o stream
+    Java System.out para um destino nulo. log()/debug() continuam
+    visiveis pois escrevem direto no objeto sys.stdout original, salvo
+    antes de qualquer redirecionamento.
+
+    Importante: NAO trocamos sys.stdout (nivel Python) aqui. Comandos
+    nativos do WLST como connect() fazem, internamente, escritas de
+    baixo nivel em sys.stdout usando a assinatura Java
+    write(buffer, offset, tamanho) (3 argumentos). Um objeto Python puro
+    (com write(self, s) de 1 argumento) quebra essa chamada com
+    "TypeError: write() too many arguments". Por isso a supressao usa
+    apenas System.setOut(), que aponta para um java.io.OutputStream real
+    e aceita todas as variantes de write()."""
     System.setOut(_NULL_JAVA_OUT)
 
 
-class _SilentWriter:
-    def write(self, s):
-        pass
-
-    def flush(self):
-        pass
-
-
 def unsilence():
-    sys.stdout = _REAL_STDOUT
     System.setOut(_REAL_JAVA_OUT)
 
 
