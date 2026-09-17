@@ -101,11 +101,19 @@ LOG_FILE="${LOG_DIR}/bridges_${ACTION}_${TIMESTAMP}.log"
 LIST_ARG="${BRIDGE_LIST_FILE:-$ALL_MARKER}"
 
 # O cabecalho detalhado (acao, admin URL, escopo) e' impresso pelo proprio
-# bridge_action.py. Aqui filtramos apenas o "boilerplate" fixo que o
-# wlst.sh sempre imprime ao iniciar/encerrar o interpretador, para manter
-# a tela focada no que interessa. O log completo (sem filtro) continua
-# disponivel em $LOG_FILE.
-WLST_BOILERPLATE='^(Initializing WebLogic Scripting Tool \.\.\.|Welcome to WebLogic Server Administration Scripting Shell|Type help\(\) for help on available commands|Exiting WebLogic Scripting Tool\.)$'
+# bridge_action.py. Aqui filtramos, so por texto (grep), o "ruido" nativo
+# que o proprio wlst.sh imprime: boilerplate de inicio/fim do interpretador
+# e o dump de navegacao das arvores MBean (ls()/cd(), "Location changed
+# to ... tree", etc). Isso e' feito SOMENTE no texto ja impresso, depois
+# que o WLST processou o comando - nao interfere em nada da execucao do
+# bridge_action.py (diferente de tentar suprimir via System.out dentro do
+# proprio script Jython, o que quebra comandos nativos do WLST como
+# connect()/domainConfig() nesta versao). O log completo, sem filtro,
+# continua disponivel em $LOG_FILE.
+#
+# Padroes usados como prefixo (^...), sem ancorar o fim da linha, pois o
+# WLST as vezes deixa espacos em branco no final dessas mensagens:
+WLST_NOISE='^(Initializing WebLogic Scripting Tool|Welcome to WebLogic Server Administration Scripting Shell|Type help\(\) for help on available commands|Exiting WebLogic Scripting Tool\.|dr--|Location changed to |with .*MBean as the root MBean\.|For more help, use help\()'
 
 set +e
 "$WLST_EXEC" "$PY_SCRIPT" \
@@ -113,7 +121,7 @@ set +e
   "$LIST_ARG" \
   "$ADMIN_URL" \
   "$WLS_USER_CONFIG_FILE" \
-  "$WLS_USER_KEY_FILE" 2>&1 | tee -a "$LOG_FILE" | grep -Ev "$WLST_BOILERPLATE" | cat -s
+  "$WLS_USER_KEY_FILE" 2>&1 | tee -a "$LOG_FILE" | grep -Ev "$WLST_NOISE" | cat -s
 RC=${PIPESTATUS[0]}
 set -e
 

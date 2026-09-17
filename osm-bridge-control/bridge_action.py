@@ -46,21 +46,20 @@
 #
 # Experiencia do usuario:
 #   O WLST imprime, por padrao, muito "ruido" nativo (banners de conexao,
-#   avisos de protocolo, dump completo de cada ls()/cd()). Para manter a
-#   tela limpa, este script redireciona temporariamente o stream Java
-#   System.out para um destino nulo enquanto navega as arvores do WLST
-#   (ver silence()/unsilence() para o motivo de NAO tocar em sys.stdout),
-#   e usa log()/debug() - que escrevem diretamente no sys.stdout original,
-#   guardado no inicio - para mostrar somente as mensagens proprias do
-#   script. Defina a variavel de ambiente BRIDGE_DEBUG=1 para reexibir os
-#   detalhes de navegacao (util em diagnostico).
+#   avisos de protocolo, dump completo de cada ls()/cd()). JA TENTAMOS
+#   suprimir isso substituindo System.out/sys.stdout a partir deste
+#   script, mas essa abordagem foi abandonada: o WLST classico usa um
+#   bridge interno ("<iostream>") que varios comandos (connect(),
+#   domainConfig(), e provavelmente domainRuntime()/edit()/activate())
+#   dependem para funcionar corretamente, e substituir System.out quebra
+#   esse bridge com "TypeError: write() too many arguments" de forma
+#   imprevisivel, mesmo com um java.io.OutputStream valido. Portanto,
+#   ESTE SCRIPT NAO MEXE em stdout/System.out - a filtragem do ruido e'
+#   feita de forma segura no wrapper start_stop_bridges.sh (via grep),
+#   que so opera sobre o texto ja impresso, sem risco de quebrar o WLST.
 
 import sys
 import os
-
-from java.io import OutputStream
-from java.io import PrintStream
-from java.lang import System
 
 ALL_MARKER = "__ALL__"
 LINE = "-" * 78
@@ -71,54 +70,14 @@ try:
 except Exception:
     DEBUG = 0
 
-_REAL_STDOUT = sys.stdout
-_REAL_JAVA_OUT = System.out
-
-
-class _NullOutputStream(OutputStream):
-    # java.io.OutputStream tem 3 sobrecargas de write(): write(int),
-    # write(byte[]) e write(byte[], int, int). O bridge interno do WLST
-    # ("<iostream>") despacha para esse objeto via introspecao Python (nao
-    # via dispatch nativo da JVM), entao um metodo com aridade fixa (ex.:
-    # "def write(self, b)") quebra com TypeError quando chamado com a
-    # variante de 3 argumentos. Usar *args aceita qualquer uma das
-    # sobrecargas.
-    def write(self, *args):
-        pass
-
-
-_NULL_JAVA_OUT = PrintStream(_NullOutputStream())
-
 
 def log(msg):
-    _REAL_STDOUT.write(str(msg) + "\n")
-    _REAL_STDOUT.flush()
+    print msg
 
 
 def debug(msg):
     if DEBUG:
         log("   [debug] %s" % msg)
-
-
-def silence():
-    """Suprime a saida nativa e verbosa do WLST redirecionando o stream
-    Java System.out para um destino nulo. log()/debug() continuam
-    visiveis pois escrevem direto no objeto sys.stdout original, salvo
-    antes de qualquer redirecionamento.
-
-    Importante: NAO trocamos sys.stdout (nivel Python) aqui. Comandos
-    nativos do WLST como connect() fazem, internamente, escritas de
-    baixo nivel em sys.stdout usando a assinatura Java
-    write(buffer, offset, tamanho) (3 argumentos). Um objeto Python puro
-    (com write(self, s) de 1 argumento) quebra essa chamada com
-    "TypeError: write() too many arguments". Por isso a supressao usa
-    apenas System.setOut(), que aponta para um java.io.OutputStream real
-    e aceita todas as variantes de write()."""
-    System.setOut(_NULL_JAVA_OUT)
-
-
-def unsilence():
-    System.setOut(_REAL_JAVA_OUT)
 
 
 def read_bridge_list(path):
@@ -322,7 +281,6 @@ def print_summary(results):
 
 
 def finish(exit_code):
-    unsilence()
     try:
         disconnect()
     except Exception:
@@ -355,57 +313,45 @@ def main():
     print_header(action, admin_url, requested)
 
     log("Conectando ao AdminServer...")
-    silence()
     try:
         connect(userConfigFile=user_config_file, userKeyFile=user_key_file, url=admin_url)
     except Exception, e:
-        unsilence()
         log("ERRO: falha ao conectar no AdminServer: %s" % e)
         exit(exitcode=2)
         return
-    unsilence()
     log("Conectado com sucesso.")
 
     results = []
     try:
-        silence()
-        try:
-            configured = discover_configured_bridge_names()
-            if not configured:
-                unsilence()
-                log("Nenhuma Bridge configurada foi encontrada no dominio.")
-                finish(1)
-                return
+        configured = discover_configured_bridge_names()
+        if not configured:
+            log("Nenhuma Bridge configurada foi encontrada no dominio.")
+            finish(1)
+            return
 
-            if requested:
-                target_names = requested
-            else:
-                target_names = list(configured)
+        if requested:
+            target_names = requested
+        else:
+            target_names = list(configured)
 
-            unknown = [n for n in target_names if n not in configured]
-            if unknown:
-                unsilence()
-                log("AVISO: as Bridges a seguir nao existem na configuracao do dominio "
-                    "e serao ignoradas: %s" % unknown)
-                silence()
-                target_names = [n for n in target_names if n in configured]
+        unknown = [n for n in target_names if n not in configured]
+        if unknown:
+            log("AVISO: as Bridges a seguir nao existem na configuracao do dominio "
+                "e serao ignoradas: %s" % unknown)
+            target_names = [n for n in target_names if n in configured]
 
-            if not target_names:
-                unsilence()
-                log("Nenhuma Bridge valida para processar.")
-                finish(1)
-                return
+        if not target_names:
+            log("Nenhuma Bridge valida para processar.")
+            finish(1)
+            return
 
-            log("Processando %d bridge(s)..." % len(target_names))
+        log("Processando %d bridge(s)..." % len(target_names))
 
-            if action == 'status':
-                run_status(target_names, results)
-            else:
-                run_start_stop(action, target_names, results)
-        finally:
-            unsilence()
+        if action == 'status':
+            run_status(target_names, results)
+        else:
+            run_start_stop(action, target_names, results)
     except Exception, e:
-        unsilence()
         log("ERRO inesperado durante o processamento: %s" % e)
         finish(2)
         return
