@@ -5,8 +5,13 @@
 # sobre o qual roda o Oracle OSM 7.4.0.
 #
 # NAO deve ser executado com um interpretador Python convencional (CPython):
-# os comandos connect(), domainConfig(), domainRuntime(), cd(), cmo, exit()
-# sao injetados dinamicamente pelo WLST no namespace do Jython.
+# os comandos connect(), domainConfig(), domainRuntime(), cd(), ls(), cmo,
+# exit() sao injetados dinamicamente pelo WLST no namespace do Jython.
+#
+# Compatibilidade: o WLST classico do WebLogic 12c roda sobre Jython 2.2.1,
+# entao este script evita deliberadamente qualquer sintaxe posterior ao
+# Python 2.4 (sem expressoes condicionais "x if c else y", sem "with",
+# sem "except E as e", etc).
 #
 # Uso (via start_stop_bridges.sh):
 #   wlst.sh bridge_action.py <start|stop|status> <arquivo_lista|__ALL__> \
@@ -15,16 +20,25 @@
 # Estrategia:
 #   1) Conecta no AdminServer com credenciais criptografadas
 #      (storeUserConfig/storeKey - ver README.md).
-#   2) Le a configuracao do dominio (domainConfig) e obtem, via CMO,
-#      todas as Bridges configuradas (DomainMBean.getMessagingBridges()).
-#   3) Le o runtime do dominio (domainRuntime) e obtem, via CMO, as
-#      instancias runtime das Bridges em cada Managed Server
-#      (ServerRuntimeMBean.getMessagingBridgeRuntimes()).
+#   2) Navega a arvore de configuracao do dominio (domainConfig) usando
+#      caminhos absolutos (cd('/MessagingBridges')) para descobrir os
+#      NOMES de todas as Bridges configuradas.
+#   3) Navega a arvore de runtime do dominio (domainRuntime), tambem com
+#      caminhos absolutos por servidor
+#      (cd('/ServerRuntimes/<server>/MessagingBridgeRuntimes/<bridge>')),
+#      para localizar a instancia runtime de cada Bridge.
+#
+#      Importante: a navegacao usa sempre caminhos absolutos explicitos
+#      (nunca cd('/') seguido de cmo.getXxx()). Em WLST classico, alternar
+#      entre domainConfig()/domainRuntime() e depois usar cd('/') pode
+#      deixar a variavel global 'cmo' presa no MBean da arvore anterior,
+#      causando AttributeError (ex.: 'getServerRuntimes' no DomainMBean de
+#      configuracao). Usar cd() com o caminho completo de cada MBean forca
+#      a re-resolucao correta de 'cmo' a cada passo.
 #   4) Filtra pela lista externa informada (se vazia/ausente, afeta TODAS
 #      as Bridges configuradas no dominio).
-#   5) Aplica a acao diretamente sobre o objeto MBean runtime de cada
-#      Bridge (start()/stop()), sem parsing textual de ls(), o que torna
-#      a navegacao robusta a diferencas de formatacao entre versoes.
+#   5) Aplica start()/stop() diretamente sobre o objeto MBean runtime de
+#      cada Bridge, capturado no momento do cd() para o seu caminho.
 
 import sys
 
@@ -50,72 +64,73 @@ def read_bridge_list(path):
     return names
 
 
-def discover_configured_bridges():
-    """Retorna dict {nome_da_bridge: MessagingBridgeMBean} a partir da
-    configuracao do dominio (fonte da verdade de 'todas as Bridges')."""
+def discover_configured_bridge_names():
+    """Retorna a lista de nomes de todas as Bridges configuradas no
+    dominio (fonte da verdade de 'todas as Bridges')."""
     domainConfig()
-    cd('/')
-    bridges = {}
     try:
-        for b in cmo.getMessagingBridges():
-            bridges[b.getName()] = b
+        cd('/MessagingBridges')
+        names = ls(returnMap='true')
     except Exception, e:
-        log("AVISO: falha ao ler MessagingBridges da configuracao do dominio: %s" % e)
-    return bridges
+        log("AVISO: falha ao listar /MessagingBridges na configuracao do dominio: %s" % e)
+        return []
+    return list(names)
 
 
 def discover_bridge_runtimes():
-    """Retorna dict {nome_da_bridge: [MessagingBridgeRuntimeMBean, ...]}
+    """Retorna dict {nome_da_bridge: [(nome_do_server, MessagingBridgeRuntimeMBean), ...]}
     percorrendo os ServerRuntimes do dominio. Uma bridge pode ter mais de
     uma instancia runtime se estiver targetizada para varios servers."""
     domainRuntime()
-    cd('/')
     runtime_map = {}
     try:
-        server_runtimes = cmo.getServerRuntimes()
+        cd('/ServerRuntimes')
+        server_names = ls(returnMap='true')
     except Exception, e:
-        log("ERRO: falha ao listar ServerRuntimes do dominio: %s" % e)
+        log("ERRO: falha ao listar /ServerRuntimes do dominio: %s" % e)
         return runtime_map
 
-    for server_rt in server_runtimes:
+    for server_name in server_names:
+        bridges_path = '/ServerRuntimes/%s/MessagingBridgeRuntimes' % server_name
         try:
-            bridge_runtimes = server_rt.getMessagingBridgeRuntimes()
+            cd(bridges_path)
+            bridge_names = ls(returnMap='true')
         except Exception:
-            # Server pode estar down/nao acessivel via RMI no momento
+            # Server sem bridges targetizadas, parado, ou sem acesso RMI no momento
             continue
-        for br in bridge_runtimes:
-            runtime_map.setdefault(br.getName(), []).append(br)
+        for bname in bridge_names:
+            try:
+                cd('%s/%s' % (bridges_path, bname))
+                runtime_map.setdefault(bname, []).append((server_name, cmo))
+            except Exception:
+                continue
     return runtime_map
 
 
-def apply_action(name, br, action, results):
+def apply_action(name, server_name, br, action, results):
     try:
         state = br.getState()
         if action == 'status':
-            results.append((name, br.getParent().getName(), 'OK', state))
+            results.append((name, server_name, 'OK', state))
             return
 
         if action == 'start':
             if state in ('Running',):
-                results.append((name, br.getParent().getName(), 'SKIP',
+                results.append((name, server_name, 'SKIP',
                                  'ja em execucao (%s)' % state))
             else:
                 br.start()
-                results.append((name, br.getParent().getName(), 'OK',
+                results.append((name, server_name, 'OK',
                                  'start solicitado (estado anterior: %s)' % state))
         elif action == 'stop':
             if state in ('Shutdown', 'Stopped'):
-                results.append((name, br.getParent().getName(), 'SKIP',
+                results.append((name, server_name, 'SKIP',
                                  'ja parada (%s)' % state))
             else:
                 br.stop()
-                results.append((name, br.getParent().getName(), 'OK',
+                results.append((name, server_name, 'OK',
                                  'stop solicitado (estado anterior: %s)' % state))
     except Exception, e:
-        try:
-            server_name = br.getParent().getName()
-        except Exception:
-            server_name = '?'
         results.append((name, server_name, 'FAIL', str(e)))
 
 
@@ -157,7 +172,7 @@ def main():
         exit(exitcode=2)
         return
 
-    configured = discover_configured_bridges()
+    configured = discover_configured_bridge_names()
     if not configured:
         log("Nenhuma Bridge configurada foi encontrada no dominio.")
         finish(1)
@@ -166,7 +181,7 @@ def main():
     if requested:
         target_names = requested
     else:
-        target_names = list(configured.keys())
+        target_names = list(configured)
 
     unknown = [n for n in target_names if n not in configured]
     if unknown:
@@ -189,17 +204,19 @@ def main():
                              'runtime MBean nao encontrado (server de destino parado '
                              'ou bridge sem target ativo)'))
             continue
-        for br in instances:
-            apply_action(name, br, action, results)
+        for instance in instances:
+            server_name = instance[0]
+            br = instance[1]
+            apply_action(name, server_name, br, action, results)
 
     log("")
     log("=" * 100)
     log("%-30s %-20s %-6s %s" % ("BRIDGE", "SERVER", "STATUS", "DETALHE"))
     log("=" * 100)
     failures = 0
-    for name, server_name, status, detail in results:
-        log("%-30s %-20s %-6s %s" % (name, server_name, status, detail))
-        if status == 'FAIL':
+    for row in results:
+        log("%-30s %-20s %-6s %s" % (row[0], row[1], row[2], row[3]))
+        if row[2] == 'FAIL':
             failures += 1
 
     log("")
