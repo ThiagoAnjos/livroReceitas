@@ -76,7 +76,14 @@ _REAL_JAVA_OUT = System.out
 
 
 class _NullOutputStream(OutputStream):
-    def write(self, b):
+    # java.io.OutputStream tem 3 sobrecargas de write(): write(int),
+    # write(byte[]) e write(byte[], int, int). O bridge interno do WLST
+    # ("<iostream>") despacha para esse objeto via introspecao Python (nao
+    # via dispatch nativo da JVM), entao um metodo com aridade fixa (ex.:
+    # "def write(self, b)") quebra com TypeError quando chamado com a
+    # variante de 3 argumentos. Usar *args aceita qualquer uma das
+    # sobrecargas.
+    def write(self, *args):
         pass
 
 
@@ -348,19 +355,15 @@ def main():
     print_header(action, admin_url, requested)
 
     log("Conectando ao AdminServer...")
-    # IMPORTANTE: nao chamar silence() antes/durante o connect(). O
-    # mecanismo interno do WLST usado por connect() para relatar
-    # progresso/retentativas de conexao ("<iostream>") depende do
-    # System.out original nesse momento; troca-lo aqui quebra o connect()
-    # com "TypeError: write() too many arguments" mesmo usando um
-    # java.io.OutputStream valido. O ruido do connect() (banner de
-    # conexao, aviso de protocolo) e' pequeno e unico, entao fica visivel.
+    silence()
     try:
         connect(userConfigFile=user_config_file, userKeyFile=user_key_file, url=admin_url)
     except Exception, e:
+        unsilence()
         log("ERRO: falha ao conectar no AdminServer: %s" % e)
         exit(exitcode=2)
         return
+    unsilence()
     log("Conectado com sucesso.")
 
     results = []
