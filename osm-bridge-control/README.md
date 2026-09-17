@@ -84,6 +84,53 @@ feito com comandos WLST nativos (`connect`, `domainConfig`,
 Se `-f` for omitido, ou o arquivo indicado estiver vazio, **todas** as
 Bridges configuradas no domínio são afetadas — conforme solicitado.
 
+### Saída na tela
+
+Por padrão, a tela mostra só o que importa: um cabeçalho (ambiente, ação,
+escopo), a tabela de resultados por Bridge e um resumo final
+(`Total | OK | Ignoradas | Falhas`). Todo o "ruído" nativo do WLST
+(banners de conexão, avisos de protocolo, dump de `ls()`/`cd()`) é
+suprimido da tela.
+
+Exemplo de saída (`status`):
+
+```
+========================================================================
+ Oracle OSM - Controle de Bridges (WebLogic Messaging Bridges)
+========================================================================
+Admin URL : t3://10.139.19.183:7001
+Acao      : STATUS
+Escopo    : TODAS as bridges do dominio
+========================================================================
+Conectando ao AdminServer...
+Conectado com sucesso.
+Processando 50 bridge(s)...
+
+BRIDGE                                     SERVIDOR         ESTADO
+------------------------------------------------------------------------
+Bridge_ActivateGILRequest                  vrainst01        Running
+Bridge_TechnicalCallCancelRequest          AdminServer      Inactive
+------------------------------------------------------------------------
+Total: 121 | OK: 121 | Ignoradas: 0 | Falhas: 0
+========================================================================
+
+Concluido com sucesso.
+Log completo salvo em: logs/bridges_status_20260917_150009.log
+```
+
+O **log em arquivo** (`logs/bridges_<acao>_<timestamp>.log`) continua
+completo, sem filtro — útil para auditoria ou para investigar um problema
+específico do WLST.
+
+Para reexibir na tela os detalhes de navegação (servidores encontrados,
+Bridges runtime por servidor etc., úteis em diagnóstico), exporte
+`BRIDGE_DEBUG=1` antes de rodar o script:
+
+```bash
+export BRIDGE_DEBUG=1
+./start_stop_bridges.sh status
+```
+
 ## Configuração
 
 1. Copie `env.conf.example` para `env.conf` no mesmo diretório e ajuste:

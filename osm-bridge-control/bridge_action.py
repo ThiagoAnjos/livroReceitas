@@ -13,7 +13,8 @@
 # entao este script evita deliberadamente qualquer sintaxe posterior ao
 # Python 2.4 (sem expressoes condicionais "x if c else y", sem "with", sem
 # "except E as e", sem os literais True/False/bool que so existem a partir
-# do Python 2.3 - usa-se 1/0 no lugar).
+# do Python 2.3 - usa-se 1/0 no lugar), e evita caracteres nao-ASCII (o
+# console do WLST classico pode nao lidar bem com Unicode).
 #
 # Uso (via start_stop_bridges.sh):
 #   wlst.sh bridge_action.py <start|stop|status> <arquivo_lista|__ALL__> \
@@ -42,14 +43,73 @@
 #
 # Em ambos os casos, se a lista externa de Bridges estiver vazia/ausente,
 # a acao e' aplicada a TODAS as Bridges configuradas no dominio.
+#
+# Experiencia do usuario:
+#   O WLST imprime, por padrao, muito "ruido" nativo (banners de conexao,
+#   avisos de protocolo, dump completo de cada ls()/cd()). Para manter a
+#   tela limpa, este script redireciona temporariamente a saida padrao
+#   (Python e Java) para um destino nulo enquanto navega as arvores do
+#   WLST, e usa log()/debug() - que escrevem diretamente no stream real
+#   guardado no inicio - para mostrar somente as mensagens proprias do
+#   script. Defina a variavel de ambiente BRIDGE_DEBUG=1 para reexibir os
+#   detalhes de navegacao (util em diagnostico).
 
 import sys
+import os
+
+from java.io import OutputStream
+from java.io import PrintStream
+from java.lang import System
 
 ALL_MARKER = "__ALL__"
+LINE = "-" * 78
+DOUBLE_LINE = "=" * 78
+
+try:
+    DEBUG = os.environ.get('BRIDGE_DEBUG', '0') not in ('', '0')
+except Exception:
+    DEBUG = 0
+
+_REAL_STDOUT = sys.stdout
+_REAL_JAVA_OUT = System.out
+
+
+class _NullOutputStream(OutputStream):
+    def write(self, b):
+        pass
+
+
+_NULL_JAVA_OUT = PrintStream(_NullOutputStream())
 
 
 def log(msg):
-    print msg
+    _REAL_STDOUT.write(str(msg) + "\n")
+    _REAL_STDOUT.flush()
+
+
+def debug(msg):
+    if DEBUG:
+        log("   [debug] %s" % msg)
+
+
+def silence():
+    """Suprime a saida nativa e verbosa do WLST (Python e Java), mantendo
+    log()/debug() sempre visiveis pois escrevem no stream real guardado."""
+    sys.stdout = _SilentWriter()
+    System.setOut(_NULL_JAVA_OUT)
+
+
+class _SilentWriter:
+    def write(self, s):
+        pass
+
+    def flush(self):
+        pass
+
+
+def unsilence():
+    sys.stdout = _REAL_STDOUT
+    System.setOut(_REAL_JAVA_OUT)
 
 
 def read_bridge_list(path):
@@ -75,7 +135,7 @@ def discover_configured_bridge_names():
         cd('/MessagingBridges')
         names = ls(returnMap='true')
     except Exception, e:
-        log("AVISO: falha ao listar /MessagingBridges na configuracao do dominio: %s" % e)
+        debug("falha ao listar /MessagingBridges na configuracao do dominio: %s" % e)
         return []
     return list(names)
 
@@ -90,8 +150,10 @@ def discover_bridge_runtimes():
         cd('/ServerRuntimes')
         server_names = ls(returnMap='true')
     except Exception, e:
-        log("ERRO: falha ao listar /ServerRuntimes do dominio: %s" % e)
+        debug("falha ao listar /ServerRuntimes do dominio: %s" % e)
         return runtime_map
+
+    debug("servidores encontrados: %s" % list(server_names))
 
     for server_name in server_names:
         bridges_path = '/ServerRuntimes/%s/MessagingBridgeRuntimes' % server_name
@@ -99,8 +161,9 @@ def discover_bridge_runtimes():
             cd(bridges_path)
             bridge_names = ls(returnMap='true')
         except Exception, e:
-            log("AVISO: nao foi possivel acessar %s: %s" % (bridges_path, e))
+            debug("nao foi possivel acessar %s: %s" % (bridges_path, e))
             continue
+        debug("%s -> %s" % (server_name, list(bridge_names)))
         for bname in bridge_names:
             # Quando a Bridge esta targetizada para um cluster, o WebLogic
             # desambigua o nome do MBean runtime de cada membro anexando
@@ -112,7 +175,7 @@ def discover_bridge_runtimes():
                 cd('%s/%s' % (bridges_path, bname))
                 runtime_map.setdefault(logical_name, []).append((server_name, cmo))
             except Exception, e:
-                log("AVISO: falha ao acessar %s/%s: %s" % (bridges_path, bname, e))
+                debug("falha ao acessar %s/%s: %s" % (bridges_path, bname, e))
                 continue
     return runtime_map
 
@@ -123,8 +186,8 @@ def run_status(target_names, results):
         instances = runtime_map.get(name)
         if not instances:
             results.append((name, '-', 'FAIL',
-                             'runtime MBean nao encontrado (server de destino parado '
-                             'ou bridge sem target ativo)'))
+                             'instancia runtime nao encontrada (servidor de destino '
+                             'parado ou bridge sem target ativo)'))
             continue
         for instance in instances:
             server_name = instance[0]
@@ -151,7 +214,8 @@ def run_start_stop(action, target_names, results):
     except Exception, e:
         for name in target_names:
             results.append((name, '-', 'FAIL',
-                             'falha ao iniciar sessao de edicao (startEdit): %s' % e))
+                             'nao foi possivel iniciar a sessao de edicao do dominio '
+                             '(pode haver outra edicao em andamento no Console/EM): %s' % e))
         return
 
     prepared = []
@@ -174,24 +238,82 @@ def run_start_stop(action, target_names, results):
         save()
         activate()
     except Exception, e:
-        log("ERRO ao ativar as alteracoes (activate): %s" % e)
+        debug("activate() falhou: %s" % e)
         try:
             cancelEdit('y')
         except Exception:
             pass
         for name in prepared:
-            results.append((name, '-', 'FAIL', 'activate() falhou: %s' % e))
+            results.append((name, '-', 'FAIL', 'falha ao ativar a alteracao: %s' % e))
         return
 
     if started_value:
-        detail = 'start aplicado (Started=true, configuracao ativada)'
+        detail = 'bridge iniciada (configuracao ativada)'
     else:
-        detail = 'stop aplicado (Started=false, configuracao ativada)'
+        detail = 'bridge parada (configuracao ativada)'
     for name in prepared:
         results.append((name, '-', 'OK', detail))
 
 
+def print_header(action, admin_url, requested):
+    log("")
+    log(DOUBLE_LINE)
+    log(" Oracle OSM - Controle de Bridges (WebLogic Messaging Bridges)")
+    log(DOUBLE_LINE)
+    log("Admin URL : %s" % admin_url)
+    log("Acao      : %s" % action.upper())
+    if requested:
+        log("Escopo    : %d bridge(s) informada(s) na lista externa" % len(requested))
+    else:
+        log("Escopo    : TODAS as bridges do dominio")
+    log(DOUBLE_LINE)
+
+
+def print_results(action, results):
+    log("")
+    if action == 'status':
+        log("%-42s %-16s %s" % ("BRIDGE", "SERVIDOR", "ESTADO"))
+        log(LINE)
+        for row in results:
+            name, server_name, status, detail = row[0], row[1], row[2], row[3]
+            if status == 'FAIL':
+                log("%-42s %-16s FALHA: %s" % (name, server_name, detail))
+            else:
+                log("%-42s %-16s %s" % (name, server_name, detail))
+    else:
+        log("%-42s %-10s %s" % ("BRIDGE", "RESULTADO", "DETALHE"))
+        log(LINE)
+        for row in results:
+            name, status, detail = row[0], row[2], row[3]
+            if status == 'OK':
+                tag = 'OK'
+            elif status == 'SKIP':
+                tag = 'IGNORADA'
+            else:
+                tag = 'FALHA'
+            log("%-42s %-10s %s" % (name, tag, detail))
+    log(LINE)
+
+
+def print_summary(results):
+    ok = 0
+    skip = 0
+    fail = 0
+    for row in results:
+        if row[2] == 'OK':
+            ok += 1
+        elif row[2] == 'SKIP':
+            skip += 1
+        elif row[2] == 'FAIL':
+            fail += 1
+    log("Total: %d | OK: %d | Ignoradas: %d | Falhas: %d" % (len(results), ok, skip, fail))
+    log(DOUBLE_LINE)
+    log("")
+    return fail
+
+
 def finish(exit_code):
+    unsilence()
     try:
         disconnect()
     except Exception:
@@ -221,55 +343,69 @@ def main():
 
     requested = read_bridge_list(list_file)
 
-    log("Conectando em %s ..." % admin_url)
+    print_header(action, admin_url, requested)
+
+    log("Conectando ao AdminServer...")
+    silence()
     try:
         connect(userConfigFile=user_config_file, userKeyFile=user_key_file, url=admin_url)
     except Exception, e:
+        unsilence()
         log("ERRO: falha ao conectar no AdminServer: %s" % e)
         exit(exitcode=2)
         return
-
-    configured = discover_configured_bridge_names()
-    if not configured:
-        log("Nenhuma Bridge configurada foi encontrada no dominio.")
-        finish(1)
-        return
-
-    if requested:
-        target_names = requested
-    else:
-        target_names = list(configured)
-
-    unknown = [n for n in target_names if n not in configured]
-    if unknown:
-        log("AVISO: as Bridges a seguir nao existem na configuracao do dominio "
-            "e serao ignoradas: %s" % unknown)
-        target_names = [n for n in target_names if n in configured]
-
-    if not target_names:
-        log("Nenhuma Bridge valida para processar.")
-        finish(1)
-        return
+    unsilence()
+    log("Conectado com sucesso.")
 
     results = []
-    if action == 'status':
-        run_status(target_names, results)
-    else:
-        run_start_stop(action, target_names, results)
+    try:
+        silence()
+        try:
+            configured = discover_configured_bridge_names()
+            if not configured:
+                unsilence()
+                log("Nenhuma Bridge configurada foi encontrada no dominio.")
+                finish(1)
+                return
 
-    log("")
-    log("=" * 100)
-    log("%-30s %-20s %-6s %s" % ("BRIDGE", "SERVER", "STATUS", "DETALHE"))
-    log("=" * 100)
-    failures = 0
-    for row in results:
-        log("%-30s %-20s %-6s %s" % (row[0], row[1], row[2], row[3]))
-        if row[2] == 'FAIL':
-            failures += 1
+            if requested:
+                target_names = requested
+            else:
+                target_names = list(configured)
 
-    log("")
+            unknown = [n for n in target_names if n not in configured]
+            if unknown:
+                unsilence()
+                log("AVISO: as Bridges a seguir nao existem na configuracao do dominio "
+                    "e serao ignoradas: %s" % unknown)
+                silence()
+                target_names = [n for n in target_names if n in configured]
+
+            if not target_names:
+                unsilence()
+                log("Nenhuma Bridge valida para processar.")
+                finish(1)
+                return
+
+            log("Processando %d bridge(s)..." % len(target_names))
+
+            if action == 'status':
+                run_status(target_names, results)
+            else:
+                run_start_stop(action, target_names, results)
+        finally:
+            unsilence()
+    except Exception, e:
+        unsilence()
+        log("ERRO inesperado durante o processamento: %s" % e)
+        finish(2)
+        return
+
+    print_results(action, results)
+    failures = print_summary(results)
+
     if failures:
-        log("Concluido com %d falha(s)." % failures)
+        log("Concluido com %d falha(s). Verifique os detalhes acima." % failures)
         finish(1)
     else:
         log("Concluido com sucesso.")

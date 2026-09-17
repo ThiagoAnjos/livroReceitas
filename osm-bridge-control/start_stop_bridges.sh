@@ -100,9 +100,12 @@ LOG_FILE="${LOG_DIR}/bridges_${ACTION}_${TIMESTAMP}.log"
 
 LIST_ARG="${BRIDGE_LIST_FILE:-$ALL_MARKER}"
 
-echo "Acao: ${ACTION} | Lista: ${BRIDGE_LIST_FILE:-<todas as Bridges do dominio>}" | tee -a "$LOG_FILE"
-echo "Admin URL: ${ADMIN_URL}" | tee -a "$LOG_FILE"
-echo "----------------------------------------------------------------------" | tee -a "$LOG_FILE"
+# O cabecalho detalhado (acao, admin URL, escopo) e' impresso pelo proprio
+# bridge_action.py. Aqui filtramos apenas o "boilerplate" fixo que o
+# wlst.sh sempre imprime ao iniciar/encerrar o interpretador, para manter
+# a tela focada no que interessa. O log completo (sem filtro) continua
+# disponivel em $LOG_FILE.
+WLST_BOILERPLATE='^(Initializing WebLogic Scripting Tool \.\.\.|Welcome to WebLogic Server Administration Scripting Shell|Type help\(\) for help on available commands|Exiting WebLogic Scripting Tool\.)$'
 
 set +e
 "$WLST_EXEC" "$PY_SCRIPT" \
@@ -110,10 +113,13 @@ set +e
   "$LIST_ARG" \
   "$ADMIN_URL" \
   "$WLS_USER_CONFIG_FILE" \
-  "$WLS_USER_KEY_FILE" 2>&1 | tee -a "$LOG_FILE"
+  "$WLS_USER_KEY_FILE" 2>&1 | tee -a "$LOG_FILE" | grep -Ev "$WLST_BOILERPLATE" | cat -s
 RC=${PIPESTATUS[0]}
 set -e
 
-echo "----------------------------------------------------------------------"
-echo "Log salvo em: $LOG_FILE"
+if [[ "$RC" -eq 0 ]]; then
+  echo "Log completo salvo em: $LOG_FILE"
+else
+  echo "Falhou (codigo $RC). Log completo salvo em: $LOG_FILE"
+fi
 exit "$RC"
