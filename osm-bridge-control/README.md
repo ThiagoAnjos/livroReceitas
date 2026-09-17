@@ -88,9 +88,25 @@ Bridges configuradas no domínio são afetadas — conforme solicitado.
 
 Por padrão, a tela mostra só o que importa: um cabeçalho (ambiente, ação,
 escopo), a tabela de resultados por Bridge e um resumo final
-(`Total | OK | Ignoradas | Falhas`). Todo o "ruído" nativo do WLST
-(banners de conexão, avisos de protocolo, dump de `ls()`/`cd()`) é
-suprimido da tela.
+(`Total | OK | Ignoradas | Falhas`). A maior parte do "ruído" nativo do
+WLST (boilerplate de início/fim do `wlst.sh`, dump de `ls()`/`cd()` ao
+navegar as árvores MBean) é filtrada.
+
+> **Nota técnica:** essa filtragem é feita no **wrapper shell**
+> (`start_stop_bridges.sh`), via `grep`, sobre o texto que o WLST já
+> imprimiu — nunca dentro do `bridge_action.py`. Chegamos a tentar
+> suprimir a saída redirecionando `System.out`/`sys.stdout` a partir do
+> próprio script Jython, mas essa abordagem foi abandonada: o WLST
+> clássico usa um mecanismo interno ("`<iostream>`") do qual vários
+> comandos nativos (`connect()`, `domainConfig()` e provavelmente
+> `domainRuntime()`/`edit()`/`activate()`) dependem para funcionar, e
+> substituir `System.out` quebra esse mecanismo com
+> `TypeError: write() too many arguments`, mesmo com um
+> `java.io.OutputStream` implementado corretamente. Filtrar apenas o
+> texto já impresso, no shell, é seguro porque não interfere em nada da
+> execução do WLST — por isso alguns avisos pontuais do `connect()`
+> (banner de conexão, aviso de protocolo inseguro) ainda aparecem na
+> tela.
 
 Exemplo de saída (`status`):
 
