@@ -10,10 +10,11 @@ externos (ex.: filas de entrada/saída de pedidos). Esse é um recurso
 **nativo** do WebLogic, com MBeans dedicados:
 
 - Configuração: `weblogic.management.configuration.MessagingBridgeMBean`,
-  acessível a partir de `DomainMBean.getMessagingBridges()`.
-- Runtime: `weblogic.management.runtime.MessagingBridgeRuntimeMBean`,
-  acessível a partir de `ServerRuntimeMBean.getMessagingBridgeRuntimes()`,
-  com os métodos nativos `start()`, `stop()` e o atributo `State`.
+  em `/MessagingBridges/<nome>` na árvore de configuração/edição do
+  domínio, com o atributo dinâmico `Started` (boolean).
+- Runtime: `weblogic.management.runtime.MessagingBridgeRuntimeMBean`, em
+  `/ServerRuntimes/<server>/MessagingBridgeRuntimes/<nome>`, com o
+  atributo `State` (usado apenas para consulta de status).
 
 Como o WLST (WebLogic Scripting Tool) é construído sobre **Jython**
 (implementação de Python para a JVM) e expõe esses MBeans diretamente no
@@ -23,13 +24,28 @@ suportado pela Oracle — escrever um script Python/Jython que:
 1. Conecta no AdminServer do domínio (`connect()`).
 2. Lê a configuração do domínio (`domainConfig()`) para descobrir todas
    as Bridges existentes.
-3. Lê o runtime do domínio (`domainRuntime()`) para localizar a instância
-   runtime de cada Bridge no(s) servidor(es) em que está targetizada.
-4. Aplica `start()`/`stop()` sobre o MBean runtime de cada Bridge alvo.
+3. Para `status`: lê o runtime do domínio (`domainRuntime()`) e localiza
+   a instância runtime de cada Bridge no(s) servidor(es) em que está
+   targetizada, reportando o atributo `State`.
+4. Para `start`/`stop`: usa a árvore de **edição** do domínio
+   (`edit()` + `startEdit()`), altera o atributo `Started` (`1`/`0`) do
+   MBean de **configuração** de cada Bridge alvo e ativa a mudança
+   (`save()` + `activate()`).
+
+> **Por que não `start()`/`stop()` no MBean de runtime?** Nessa versão
+> do WebLogic, o `MessagingBridgeRuntimeMBean` não implementa esses
+> métodos — a chamada retorna
+> `java.lang.UnsupportedOperationException: This method is not
+> implemented on runtime mbean. The way of start/stop a bridge at
+> runtime is to change the Started attribute on the configuration
+> mbean`. Essa é, portanto, a forma nativa e suportada de ligar/desligar
+> uma Bridge sem reiniciar o servidor: alterar `Started` no MBean de
+> configuração e ativar a mudança (atributo dinâmico, não exige
+> restart).
 
 Não há necessidade de nenhuma ferramenta externa ao WebLogic/FMW — tudo é
 feito com comandos WLST nativos (`connect`, `domainConfig`,
-`domainRuntime`, `cmo`, `exit`).
+`domainRuntime`, `edit`, `startEdit`, `save`, `activate`, `cmo`, `exit`).
 
 > Observação: se no seu ambiente o termo "Bridge" se referir, na
 > verdade, a um módulo/aplicação Java EE implantado (ex.: um adaptador
@@ -116,3 +132,12 @@ referencie seus caminhos em `env.conf`. O `connect()` dentro de
 - Nomes informados na lista externa que não existirem na configuração do
   domínio são ignorados com um aviso, e não interrompem o processamento
   das demais Bridges.
+- `start`/`stop` usam uma sessão de edição exclusiva do domínio
+  (`startEdit()`). Se outra sessão (ex.: Console/Enterprise Manager ou
+  outro WLST) já estiver com o lock de edição aberto, o script falha ao
+  iniciar a sessão e reporta isso na coluna `DETALHE` — não fica preso
+  aguardando o lock.
+- Como `start`/`stop` atuam sobre o MBean de **configuração** (por
+  domínio, não por servidor), a coluna `SERVER` no relatório dessas duas
+  ações aparece como `-`; a distinção por servidor só é aplicável ao
+  `status`, que lê o runtime de cada instância.

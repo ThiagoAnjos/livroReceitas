@@ -5,40 +5,43 @@
 # sobre o qual roda o Oracle OSM 7.4.0.
 #
 # NAO deve ser executado com um interpretador Python convencional (CPython):
-# os comandos connect(), domainConfig(), domainRuntime(), cd(), ls(), cmo,
-# exit() sao injetados dinamicamente pelo WLST no namespace do Jython.
+# os comandos connect(), domainConfig(), domainRuntime(), edit(), startEdit(),
+# save(), activate(), cancelEdit(), cd(), ls(), cmo, exit() sao injetados
+# dinamicamente pelo WLST no namespace do Jython.
 #
 # Compatibilidade: o WLST classico do WebLogic 12c roda sobre Jython 2.2.1,
 # entao este script evita deliberadamente qualquer sintaxe posterior ao
-# Python 2.4 (sem expressoes condicionais "x if c else y", sem "with",
-# sem "except E as e", etc).
+# Python 2.4 (sem expressoes condicionais "x if c else y", sem "with", sem
+# "except E as e", sem os literais True/False/bool que so existem a partir
+# do Python 2.3 - usa-se 1/0 no lugar).
 #
 # Uso (via start_stop_bridges.sh):
 #   wlst.sh bridge_action.py <start|stop|status> <arquivo_lista|__ALL__> \
 #           <admin_url> <userConfigFile> <userKeyFile>
 #
-# Estrategia:
-#   1) Conecta no AdminServer com credenciais criptografadas
-#      (storeUserConfig/storeKey - ver README.md).
-#   2) Navega a arvore de configuracao do dominio (domainConfig) usando
-#      caminhos absolutos (cd('/MessagingBridges')) para descobrir os
-#      NOMES de todas as Bridges configuradas.
-#   3) Navega a arvore de runtime do dominio (domainRuntime), tambem com
-#      caminhos absolutos por servidor
-#      (cd('/ServerRuntimes/<server>/MessagingBridgeRuntimes/<bridge>')),
-#      para localizar a instancia runtime de cada Bridge.
+# Descoberta ("status"):
+#   Le a arvore de runtime do dominio (domainRuntime) com caminhos
+#   absolutos por servidor
+#   (cd('/ServerRuntimes/<server>/MessagingBridgeRuntimes/<bridge>')) para
+#   reportar o estado real de cada instancia da Bridge. Quando a Bridge
+#   esta targetizada para um cluster, o WebLogic nomeia cada instancia
+#   runtime como "<nome>@<servidor>"; o nome logico (sem o sufixo) e' o
+#   mesmo usado na configuracao do dominio.
 #
-#      Importante: a navegacao usa sempre caminhos absolutos explicitos
-#      (nunca cd('/') seguido de cmo.getXxx()). Em WLST classico, alternar
-#      entre domainConfig()/domainRuntime() e depois usar cd('/') pode
-#      deixar a variavel global 'cmo' presa no MBean da arvore anterior,
-#      causando AttributeError (ex.: 'getServerRuntimes' no DomainMBean de
-#      configuracao). Usar cd() com o caminho completo de cada MBean forca
-#      a re-resolucao correta de 'cmo' a cada passo.
-#   4) Filtra pela lista externa informada (se vazia/ausente, afeta TODAS
-#      as Bridges configuradas no dominio).
-#   5) Aplica start()/stop() diretamente sobre o objeto MBean runtime de
-#      cada Bridge, capturado no momento do cd() para o seu caminho.
+# Start/Stop:
+#   O MBean de runtime da Messaging Bridge NAO implementa start()/stop()
+#   nesta versao do WebLogic (erro observado:
+#   "java.lang.UnsupportedOperationException: This method is not
+#   implemented on runtime mbean. The way of start/stop a bridge at
+#   runtime is to change the Started attribute on the configuration
+#   mbean"). Por isso, start/stop sao feitos via arvore de EDICAO do
+#   dominio (edit()/startEdit()/activate()), alterando o atributo
+#   dinamico "Started" do MBean de configuracao (/MessagingBridges/<nome>),
+#   que e' a forma nativa e suportada de ligar/desligar uma Bridge sem
+#   reiniciar o servidor.
+#
+# Em ambos os casos, se a lista externa de Bridges estiver vazia/ausente,
+# a acao e' aplicada a TODAS as Bridges configuradas no dominio.
 
 import sys
 
@@ -90,8 +93,6 @@ def discover_bridge_runtimes():
         log("ERRO: falha ao listar /ServerRuntimes do dominio: %s" % e)
         return runtime_map
 
-    log("Servidores encontrados em /ServerRuntimes: %s" % list(server_names))
-
     for server_name in server_names:
         bridges_path = '/ServerRuntimes/%s/MessagingBridgeRuntimes' % server_name
         try:
@@ -100,7 +101,6 @@ def discover_bridge_runtimes():
         except Exception, e:
             log("AVISO: nao foi possivel acessar %s: %s" % (bridges_path, e))
             continue
-        log("  %s -> Bridges runtime encontradas: %s" % (server_name, list(bridge_names)))
         for bname in bridge_names:
             # Quando a Bridge esta targetizada para um cluster, o WebLogic
             # desambigua o nome do MBean runtime de cada membro anexando
@@ -117,31 +117,78 @@ def discover_bridge_runtimes():
     return runtime_map
 
 
-def apply_action(name, server_name, br, action, results):
-    try:
-        state = br.getState()
-        if action == 'status':
-            results.append((name, server_name, 'OK', state))
-            return
+def run_status(target_names, results):
+    runtime_map = discover_bridge_runtimes()
+    for name in target_names:
+        instances = runtime_map.get(name)
+        if not instances:
+            results.append((name, '-', 'FAIL',
+                             'runtime MBean nao encontrado (server de destino parado '
+                             'ou bridge sem target ativo)'))
+            continue
+        for instance in instances:
+            server_name = instance[0]
+            br = instance[1]
+            try:
+                state = br.getState()
+                results.append((name, server_name, 'OK', state))
+            except Exception, e:
+                results.append((name, server_name, 'FAIL', str(e)))
 
-        if action == 'start':
-            if state in ('Running',):
-                results.append((name, server_name, 'SKIP',
-                                 'ja em execucao (%s)' % state))
-            else:
-                br.start()
-                results.append((name, server_name, 'OK',
-                                 'start solicitado (estado anterior: %s)' % state))
-        elif action == 'stop':
-            if state in ('Shutdown', 'Stopped'):
-                results.append((name, server_name, 'SKIP',
-                                 'ja parada (%s)' % state))
-            else:
-                br.stop()
-                results.append((name, server_name, 'OK',
-                                 'stop solicitado (estado anterior: %s)' % state))
+
+def run_start_stop(action, target_names, results):
+    """Liga/desliga as Bridges alterando o atributo 'Started' no MBean de
+    CONFIGURACAO (via arvore de edicao), que e' a forma suportada nesta
+    versao do WebLogic (o MBean de runtime nao implementa start()/stop())."""
+    if action == 'start':
+        started_value = 1
+    else:
+        started_value = 0
+
+    try:
+        edit()
+        startEdit()
     except Exception, e:
-        results.append((name, server_name, 'FAIL', str(e)))
+        for name in target_names:
+            results.append((name, '-', 'FAIL',
+                             'falha ao iniciar sessao de edicao (startEdit): %s' % e))
+        return
+
+    prepared = []
+    for name in target_names:
+        try:
+            cd('/MessagingBridges/%s' % name)
+            cmo.setStarted(started_value)
+            prepared.append(name)
+        except Exception, e:
+            results.append((name, '-', 'FAIL', str(e)))
+
+    if not prepared:
+        try:
+            cancelEdit('y')
+        except Exception:
+            pass
+        return
+
+    try:
+        save()
+        activate()
+    except Exception, e:
+        log("ERRO ao ativar as alteracoes (activate): %s" % e)
+        try:
+            cancelEdit('y')
+        except Exception:
+            pass
+        for name in prepared:
+            results.append((name, '-', 'FAIL', 'activate() falhou: %s' % e))
+        return
+
+    if started_value:
+        detail = 'start aplicado (Started=true, configuracao ativada)'
+    else:
+        detail = 'stop aplicado (Started=false, configuracao ativada)'
+    for name in prepared:
+        results.append((name, '-', 'OK', detail))
 
 
 def finish(exit_code):
@@ -204,20 +251,11 @@ def main():
         finish(1)
         return
 
-    runtime_map = discover_bridge_runtimes()
-
     results = []
-    for name in target_names:
-        instances = runtime_map.get(name)
-        if not instances:
-            results.append((name, '-', 'FAIL',
-                             'runtime MBean nao encontrado (server de destino parado '
-                             'ou bridge sem target ativo)'))
-            continue
-        for instance in instances:
-            server_name = instance[0]
-            br = instance[1]
-            apply_action(name, server_name, br, action, results)
+    if action == 'status':
+        run_status(target_names, results)
+    else:
+        run_start_stop(action, target_names, results)
 
     log("")
     log("=" * 100)
