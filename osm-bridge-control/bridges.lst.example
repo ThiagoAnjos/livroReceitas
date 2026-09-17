@@ -1,0 +1,10 @@
+# bridges.lst.example
+#
+# Uma Bridge por linha (nome exatamente como configurado no WebLogic:
+# Services > Messaging > Bridges). Linhas iniciadas com # sao ignoradas.
+#
+# Se este arquivo nao for passado ao script (-f), ou estiver vazio,
+# TODAS as Bridges do dominio serao afetadas pela acao.
+
+OSM_InboundOrderBridge
+OSM_OutboundNotificationBridge
