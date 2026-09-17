@@ -102,9 +102,15 @@ def discover_bridge_runtimes():
             continue
         log("  %s -> Bridges runtime encontradas: %s" % (server_name, list(bridge_names)))
         for bname in bridge_names:
+            # Quando a Bridge esta targetizada para um cluster, o WebLogic
+            # desambigua o nome do MBean runtime de cada membro anexando
+            # "@<nome_do_servidor>" (ex.: "Bridge_X@vrainst01"). O nome
+            # configurado no dominio (usado na lista externa e na
+            # descoberta de todas as Bridges) e sempre sem esse sufixo.
+            logical_name = bname.split('@')[0]
             try:
                 cd('%s/%s' % (bridges_path, bname))
-                runtime_map.setdefault(bname, []).append((server_name, cmo))
+                runtime_map.setdefault(logical_name, []).append((server_name, cmo))
             except Exception, e:
                 log("AVISO: falha ao acessar %s/%s: %s" % (bridges_path, bname, e))
                 continue
