@@ -163,7 +163,10 @@ def main():
         finish(1)
         return
 
-    target_names = requested if requested else list(configured.keys())
+    if requested:
+        target_names = requested
+    else:
+        target_names = list(configured.keys())
 
     unknown = [n for n in target_names if n not in configured]
     if unknown:
