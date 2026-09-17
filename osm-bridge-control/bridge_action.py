@@ -90,19 +90,23 @@ def discover_bridge_runtimes():
         log("ERRO: falha ao listar /ServerRuntimes do dominio: %s" % e)
         return runtime_map
 
+    log("Servidores encontrados em /ServerRuntimes: %s" % list(server_names))
+
     for server_name in server_names:
         bridges_path = '/ServerRuntimes/%s/MessagingBridgeRuntimes' % server_name
         try:
             cd(bridges_path)
             bridge_names = ls(returnMap='true')
-        except Exception:
-            # Server sem bridges targetizadas, parado, ou sem acesso RMI no momento
+        except Exception, e:
+            log("AVISO: nao foi possivel acessar %s: %s" % (bridges_path, e))
             continue
+        log("  %s -> Bridges runtime encontradas: %s" % (server_name, list(bridge_names)))
         for bname in bridge_names:
             try:
                 cd('%s/%s' % (bridges_path, bname))
                 runtime_map.setdefault(bname, []).append((server_name, cmo))
-            except Exception:
+            except Exception, e:
+                log("AVISO: falha ao acessar %s/%s: %s" % (bridges_path, bname, e))
                 continue
     return runtime_map
 
