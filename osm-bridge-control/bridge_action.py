@@ -348,15 +348,19 @@ def main():
     print_header(action, admin_url, requested)
 
     log("Conectando ao AdminServer...")
-    silence()
+    # IMPORTANTE: nao chamar silence() antes/durante o connect(). O
+    # mecanismo interno do WLST usado por connect() para relatar
+    # progresso/retentativas de conexao ("<iostream>") depende do
+    # System.out original nesse momento; troca-lo aqui quebra o connect()
+    # com "TypeError: write() too many arguments" mesmo usando um
+    # java.io.OutputStream valido. O ruido do connect() (banner de
+    # conexao, aviso de protocolo) e' pequeno e unico, entao fica visivel.
     try:
         connect(userConfigFile=user_config_file, userKeyFile=user_key_file, url=admin_url)
     except Exception, e:
-        unsilence()
         log("ERRO: falha ao conectar no AdminServer: %s" % e)
         exit(exitcode=2)
         return
-    unsilence()
     log("Conectado com sucesso.")
 
     results = []
